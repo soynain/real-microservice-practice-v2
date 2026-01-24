@@ -440,4 +440,59 @@ public class KibanaService {
  Espero no sea tedioso esto. Uno no tiende a diseñar estas cosas, ya hay gente que las ha creado, pero si hicieras una migración a micros, que
  trabajoso sería. Y eso que no hemos llegado a pipes y nexus jajaja.
 
+ Retomando el punto anterior, no se requiere un jar con cliente para mandar pojos customizados al servidor por http,
+ de hecho eso es ineficiente y mientras investigaba, me encontré con el concepto del logback.
+
+ En **spring boot** se usa logback y su suite (que no sabia para que funcionaba en mi última experiencia laboral pero ahora ya lo sé),
+ sirve para canalizar una conexión TCP por medio de un servidor TCP embebido en tu jar. Se ocupa un logback.xml.
+
+ ¿Qué pasa? que quarkus funciona muy diferente a spring boot, en resumidas quarkus fuerza a que uses jboss.Logger, e incluso
+ en su código fuente lo fuerza, no puedes sobreescribirlo.
  
+ <img width="1247" height="436" alt="image" src="https://github.com/user-attachments/assets/2799066c-affb-4348-9385-7f900196cfa2" />
+
+ ¿Qué puedes hacer? el approach nativo que es el uso de slf4j-jboss-logmanager https://es.quarkus.io/guides/logging#json-logging,
+ lo configuras desde tu properties fácilmente, solo pones el endpoint del tcp de tu logstash
+
+ ````application.properties
+# Enable the socket log handler
+quarkus.log.socket.enable=true
+# Specify the Logstash endpoint (e.g., localhost:4560)
+quarkus.log.socket.endpoint=localhost:5000
+# Enable JSON formatting for the socket handler
+quarkus.log.socket.json=true
+# Optional: Format the JSON in ECS format
+quarkus.log.socket.json.log-format=ECS
+# Optional: Configure exception output type
+quarkus.log.socket.json.exception-output-type=formatted
+
+ ````
+
+Y para mandar no necesitas un cliente elastic... solo trigereas un log.info:
+````kibanaService.java
+package org.acme.service;
+
+import org.acme.models.Example;
+import org.jboss.logging.Logger;
+
+import jakarta.enterprise.context.ApplicationScoped;
+
+@ApplicationScoped
+public class KibanaService {
+    private static final Logger log = Logger.getLogger(KibanaService.class);
+
+    public void insert(){
+        Example<Object> hello = new Example<>();
+        hello.setId(1);
+        hello.setRandomObj(new String("dd"));
+        hello.setMesage("DASDADSSDAASD");
+        log.info("SI FUNCIONA CON EL INDICE "+hello.toString());
+    }
+}
+````
+
+Y con eso, logro este hermoso formato que aseguro, si es productivo, hasta me trae recuerdos!!!
+
+<img width="2559" height="1315" alt="image" src="https://github.com/user-attachments/assets/31424256-8f87-475e-911c-c6b40f178a52" />
+
+Ahora queda setear campos customizados, se hace en corto, y para removerlos se hace desde logstash. Alrato lo configuramos.
