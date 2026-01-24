@@ -346,8 +346,98 @@ Y si consultas el endpoint curl -u elastic:TU_CONTRA http://localhost:9200/logst
 
 
 
-<img width="1961" height="1085" alt="image" src="https://github.com/user-attachments/assets/98c3cbbf-bc11-44b0-b856-ab0fb2a4ef3a" />
+ <img width="1961" height="1085" alt="image" src="https://github.com/user-attachments/assets/98c3cbbf-bc11-44b0-b856-ab0fb2a4ef3a" />
 
-Te saldrán tus mensajes, signific que logstash ya está configurado y ya podemos pasar al apartado de desarrollo para configurar
-nuestros logs en quarkus con algún wrapper.
-  **2.1 ¿Cómo conectarlo a quarkus?**  
+ Te saldrán tus mensajes, signific que logstash ya está configurado y ya podemos pasar al apartado de desarrollo para configurar
+ nuestros logs en quarkus con algún wrapper.
+  
+ **2.1 ¿Cómo conectarlo a quarkus?**  
+ Bueno, afortunadamente esta parte es más fácil. Ya hay una librería a alto nivel en Quarkus que lo configuras
+ con tus credenciales y un constructor cliente inicia un objeto que te lo permite mandar de esta manera:
+ 
+ https://quarkus.io/guides/elasticsearch#configuring-elasticsearch
+
+ ````elasticclient.java
+package org.acme.service;
+
+import java.io.IOException;
+import java.util.Random;
+import java.util.UUID;
+
+import org.acme.models.Example;
+
+import co.elastic.clients.elasticsearch.ElasticsearchClient;
+import co.elastic.clients.elasticsearch.core.IndexRequest;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+
+@ApplicationScoped
+public class KibanaService {
+
+    @Inject
+    ElasticsearchClient client; 
+
+    public void insert() throws IOException{
+        Example<String> ex = new Example<>();
+        Random random = new Random();
+
+        ex.setId(random.nextInt(10));
+        ex.setMesage("SI FUNCIONA EL KIBANA");
+        ex.setRandomObj(new String("Ayy bebe"));
+        
+        IndexRequest<Example> request = IndexRequest.of(  
+            b -> b.index("logstash-2026-01")
+                .id(UUID.randomUUID().toString())
+                .document(ex)); 
+
+        client.index(request);
+    }
+}
+
+ ````
+
+
+ <img width="2544" height="1013" alt="image" src="https://github.com/user-attachments/assets/5f267592-6beb-4430-ad1f-21f2bd0f5c30" />
+ Al mandar el mensaje, ya te lo manda al indice que creas, y algo útil en esto es que la creación de los indices es dinámico
+ desde el programa, es decir, no requieres programaticamente configurar los indices a cada rato en logstash.conf, desde el código 
+ si no existe, lo crea y se te refleja en el GUI.
+
+ Pero hay que configurarlo para que muestre un JSON, en vez de este formao raro, desde el menú de los indices inicias discover y wala, un borrador de logs.
+ También en teoría, se pueden añadir columnas extras:
+ 
+ <img width="2548" height="1156" alt="image" src="https://github.com/user-attachments/assets/b02de6d5-ec2e-48b9-adab-504f2548efde" />
+
+ Algo asi... pero debe existir una forma más nativa
+ 
+ <img width="1291" height="55" alt="image" src="https://github.com/user-attachments/assets/86ae7535-3d60-449a-8fc3-fa265574a6a1" />
+
+ Moviendole al discovery, al parecer los indexa de acuerdo al pojo que mandamos, así que no hay tanto tema:
+
+ <img width="2537" height="1039" alt="image" src="https://github.com/user-attachments/assets/4f4945fe-e8b5-4c30-ab53-99e3c95c6137" />
+
+ Pues ya tenemos un conector. Ahora hay que extender nuestro plugin para que haga lo siguiente:
+ Actué como interceptor, que para todos los jars implementados, traceé las peticiones, cuando las tenga úbicadas, que las mande al
+ elastic directamente bajo un pojo. Ahora no sé hasta ahora que tan separado deba ir el diseño o responsabilidades, porque no solo es
+ el log de kibana, si no también el wrapper generico.
+
+ Mientras veía unas capturas que tenía por ahí, medité que, no requiero wrappers genericos más que en una capa de front, en las demás no.
+ Por lo tanto, ahí entraría como un plugin extra, una librería que nomás, te haga el wrapper de un responde a nivel experience. En otras capas,
+ ahora otro tema complejo eran los logs en código, estos también podían salir en elastic. Debo buscar una manera de entender el,
+ como se hace conexión desde el request hasta el response, e intermediamente. Lo que entiendo es que en s4lj se conecta un
+ adaptador con xml y así manda la petición en automático al enviar. Ahora, dicen que no es muy optimo y que puede petar.
+
+ Entonces son tres vias de entrada: los requests/responses que recibe el micro, los requests/responses
+ que hace el micro y los logs que el usuario define. Con esos traceas toda tu actividad, y descartas falta de datos.
+
+ Va a ser otro pex absorver ese conocimiento, pero ya sería el último punto fuerte. Esperemos y no requiera de kafka.
+
+ **2.1.2. Diseño del commons-logging**
+ Por ahora tengo este diseño conceptual, cualquier micro que implemente esta libreria, será interceptada
+ en todo el universo, por lo tanto los devs tienen la olbigación de implementar un toString sobre todos los pojos y clases personalizadas
+ 
+ <img width="624" height="651" alt="image" src="https://github.com/user-attachments/assets/8af6d9b1-67aa-42aa-bcba-7caea2c9344e" />
+
+ Espero no sea tedioso esto. Uno no tiende a diseñar estas cosas, ya hay gente que las ha creado, pero si hicieras una migración a micros, que
+ trabajoso sería. Y eso que no hemos llegado a pipes y nexus jajaja.
+
+ 
