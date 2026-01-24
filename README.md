@@ -217,6 +217,7 @@ esto para evitar problemas con los volumenes en tus priemras veces cuando no te 
 
 Primero requieres configurar los built in users, con los siguientes comandos:
 
+ ````docker.sh
  docker exec -it elasticsearch  bin/elasticsearch-reset-password -u logstash_system
  
  docker exec -it elasticsearch  bin/elasticsearch-reset-password -u elastic
@@ -224,6 +225,7 @@ Primero requieres configurar los built in users, con los siguientes comandos:
  Y configurar el enrollment token para asociarlo internamente a tu kibana
 
  docker exec -it elasticsearch bin/elasticsearch-create-enrollment-token --scope kibana
+ ````
 
  Guarda tus contras en un sitio protegido. Continuamos.
 
@@ -281,9 +283,12 @@ output {
 ````
 logstash_internal no es un built-in. Este requiere un usuario creado con un rol. Primero se crea el rol, después el usuario:
 
+````curl.sh
 curl -u elastic:LA_CONTRA_WE http://localhost:9200/_security/user/logstash_internal
 
 curl -u elastic:LA_CONTRA_WE -X POST http://localhost:9200/_security/role/logstash_writer -H "Content-Type: application/json" -d "{\"cluster\":[\"monitor\",\"manage_index_templates\"],\"indices\":[{\"names\":[\"logstash-*\",\"logs-*\"],\"privileges\":[\"create_index\",\"write\",\"create\",\"index\"]}]}"
+
+````
 
 Ejecutas simplemente estos dos curls y con eso ya creas tu usuario y rol funcionl para logstash. Para consultarlo puedes usar 
 
