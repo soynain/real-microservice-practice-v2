@@ -127,6 +127,7 @@ Con todo esto coleccionado, ya implementamo algo más real.
   <img width="1129" height="379" alt="image" src="https://github.com/user-attachments/assets/81c9b4a6-2873-4144-8645-13c1f4b4b984" />
 
 **2. Fundamentos de elastic search**
+
 Ahmm... ok... me tomó aproximadamente la mitad de la mañana más... desde las 11:47 que empecé a investigar los conceptos básicos hasta una pausa
 a las 3:20, y de ahí retomé 10:30 y terminé a lñas 12:02 mientras escribo esto.
 
@@ -212,6 +213,7 @@ y hoy fue la oportunidad para comprenderlos mejor!!
 ¿Por qué son importantes los volumenes? lo veremos a continuación.
 
 **2.0.1 Configuración de roles y volumenes**
+
 Para configurar esta pila es en elsiguiente orden: primero elstic, después en tu docker-compose añades kibana y a lo último logstash,
 esto para evitar problemas con los volumenes en tus priemras veces cuando no te salga.
 
@@ -432,6 +434,7 @@ public class KibanaService {
  Va a ser otro pex absorver ese conocimiento, pero ya sería el último punto fuerte. Esperemos y no requiera de kafka.
 
  **2.1.2. Diseño del commons-logging**
+ 
  Por ahora tengo este diseño conceptual, cualquier micro que implemente esta libreria, será interceptada
  en todo el universo, por lo tanto los devs tienen la olbigación de implementar un toString sobre todos los pojos y clases personalizadas
  
@@ -496,3 +499,122 @@ Y con eso, logro este hermoso formato que aseguro, si es productivo, hasta me tr
 <img width="2559" height="1315" alt="image" src="https://github.com/user-attachments/assets/31424256-8f87-475e-911c-c6b40f178a52" />
 
 Ahora queda setear campos customizados, se hace en corto, y para removerlos se hace desde logstash. Alrato lo configuramos.
+
+Luego de un receso, continuamos. En la anterio captura ya hemos logrdo configurar el kibana con logs. Pero muchos de los campos que nos aparecen
+si ejecutamos el logger del jboss no son coherentes, nos interesan solo ciertos campos, y también añadir nuestros propios campos dinámicos.
+
+Para quitar esos campos que hacen ruido, debemos modificar nuestro *logstash.conf* añadiendo una línea que identificará
+nuestro plugin jar y, borrara los campos que le indiquemos:
+
+````logstash.json
+filter {
+  if [service.name] == "commons-logging-lib" {
+    mutate {
+       remove_field => [
+        "process.pid",
+        "process.parent.pid",
+        "process.command_line",
+        "thread.name",
+        "host.hostname",
+        "process.name",
+        "mdc",
+        "service.version",
+        "service.environment",
+        "ecs.version",
+        "@version",
+        "process.thread.name",
+        "log.logger",
+        "data_stream.type",
+        "process.thread.id",
+        "_ignored",
+        "_index",
+        "_score",
+        "event.sequence",
+        "service.name",
+        "ndc"
+      ]
+    }
+  }
+}
+
+````
+
+Al final tomará efecto esto.
+
+<img width="2539" height="1059" alt="image" src="https://github.com/user-attachments/assets/de4f7b65-3d55-498f-a056-9f4e4feba1a4" />
+
+
+Ahora, hay un tópico interesante que no es tan sonado realmente, o al menos hasta lo que he visto en mi experiencia. La customización real
+de los loggers. En jboss se maneja el concepto del MDC. Hay más información en este blog que lo que quarkus te ofrece:
+
+https://www.damirscorner.com/blog/posts/20230106-UsingMdcInQuarkus.html
+
+https://quarkus.io/guides/logging#logging-format
+
+En resumidas, te deja añadir meta datos extras a tus logs, dinámicamente desde tu código. ideal para intereptors.
+
+Aquí un ejemplo con las propiedades que usaremos:
+
+````KibanaService.java
+
+````
+
+Cuando se reinicie kibana o un micro o el logstash, importante recalcar que estos logs de iniciando son correctos para imprimir
+
+<img width="2094" height="1171" alt="image" src="https://github.com/user-attachments/assets/80d06498-f2bd-4204-883d-c00f563662e0" />
+
+Cuando tengas tu log, te aparecerán las columnas pero con MDC, pero tu no quieres eso. Entonces tienes que hacer un flat sobre MDC para transformarlo en nuevas columnas
+
+<img width="2533" height="895" alt="image" src="https://github.com/user-attachments/assets/83e238ab-bc48-4add-b094-90c59465fd17" />
+
+Se logra modificando una vez más el logstash.conf
+````logstash.conf
+filter {
+  if [service.name] == "commons-logging-lib" {
+    if [mdc] {
+      ruby {
+        code => '
+          event.get("mdc").each { |k, v|
+            event.set(k, v)
+          }
+        '
+      }
+    }
+
+    mutate {
+       remove_field => [
+        "process.pid",
+        "process.parent.pid",
+        "process.command_line",
+        "thread.name",
+        "host.hostname",
+        "process.name",
+        "service.version",
+        "service.environment",
+        "ecs.version",
+        "@version",
+        "process.thread.name",
+        "log.logger",
+        "data_stream.type",
+        "process.thread.id",
+        "_ignored",
+        "_index",
+        "_score",
+        "event.sequence",
+        "service.name",
+        "ndc",
+        "mdc"
+      ]
+    }
+  }
+}
+````
+Y tu flatten surgirá efecto, así se agregan nuevas columnas a tus logs de elastic:
+
+<img width="853" height="219" alt="image" src="https://github.com/user-attachments/assets/e90d86b4-0ed8-4cb0-9db4-7f30e0152629" />
+
+**2.1.2.1 Configuración de los interceptors**
+
+Para lograr esta tarea, lo haremos por medio de unos controllers de prueba que configuraremos en la libreria.
+
+Si está dificilón saber como descubrir eficazmente el request body.
