@@ -618,3 +618,80 @@ Y tu flatten surgirá efecto, así se agregan nuevas columnas a tus logs de elas
 Para lograr esta tarea, lo haremos por medio de unos controllers de prueba que configuraremos en la libreria.
 
 Si está dificilón saber como descubrir eficazmente el request body.
+
+Después de una minibatalla, descubrí cómo funciona el ciclo de vida de unas clases interceptoras, entonces,
+tienes 3 tipos de interceptores en quarkus que listo de forma ordenada: 
+
+ContainerRequestFilter: Antes de serializar el request body.
+
+ReaderInterceptor: Body request generado en bytes, previo a insertarse en un pipeline
+con jackson para convertirlo al pojo de tu request.
+
+ResponseInterceptor: cuando ya se recibió la respuesta pero todavia no se serializa
+
+WritterInterceptor: igual que el ReaderInterceptor, pero para responses.
+
+Noo, y faltan los logs del quarkus client porque esos también hay que imprimir jajaja.
+
+Pero bueno, ya logramos la parte más pesada. Para esto declara tus 3 clases:
+
+
+ContainerRequestFilter
+````java
+@Provider
+public class RequestInterceptorInit implements ContainerRequestFilter{
+
+    private static final Logger log = Logger.getLogger(KibanaService.class);
+
+    @ConfigProperty(name = "app.name")
+    private String name;
+
+    @Override
+    public void filter(ContainerRequestContext requestContext) throws IOException {
+        // TODO Auto-generated method stub
+        requestContext.setProperty("microservice", this.name);
+        requestContext.setProperty("request-uri", requestContext.getUriInfo().getPath());
+        requestContext.setProperty("request-method", requestContext.getMethod());
+        requestContext.setProperty("transaction-id", requestContext.getHeaderString("transaction-id"));
+        requestContext.setProperty("response-code", "-");   
+    }
+}
+````
+
+ReaderInterceptor
+````java
+@Provider
+@Priority(Priorities.ENTITY_CODER)
+public class RequestBodyInterceptor implements ReaderInterceptor{
+
+    private static final int MAX = 9000;
+
+    private static final Logger log = Logger.getLogger(RequestBodyInterceptor.class);
+    
+    @Override
+    public Object aroundReadFrom(ReaderInterceptorContext requestContext) throws IOException, WebApplicationException {
+        // TODO Auto-generated method stub
+        MediaType mt = requestContext.getMediaType();
+
+        byte[] body = requestContext.getInputStream().readNBytes(MAX);
+        requestContext.setInputStream(new ByteArrayInputStream(body));
+
+        MDC.put("microservice", requestContext.getProperty("microservice"));
+        MDC.put("request-uri", requestContext.getProperty("request-uri"));
+        MDC.put("request-method", requestContext.getProperty("request-method"));
+        MDC.put("transaction-id", requestContext.getProperty("transaction-id"));
+        MDC.put("response-code", requestContext.getProperty("response-code"));
+        
+        log.info("Request: ".concat(new String(body, StandardCharsets.UTF_8)));
+        return requestContext.proceed();
+    }
+    
+}
+````
+
+Con esto, ya puedes interceptar el request body de los micros, lo cual también es importante a la hora
+de que hagas tus querys con Kibana, ya que puedes ubicar campos dentro del mismo json.
+
+<img width="2490" height="1141" alt="image" src="https://github.com/user-attachments/assets/f2f39629-9902-4697-93c4-4e65b79ce3a6" />
+
+Me falta los responses entrantes, y refinar un poco el message porque si debe ubicar keywords en los jsons.
