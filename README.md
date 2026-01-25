@@ -695,3 +695,68 @@ de que hagas tus querys con Kibana, ya que puedes ubicar campos dentro del mismo
 <img width="2490" height="1141" alt="image" src="https://github.com/user-attachments/assets/f2f39629-9902-4697-93c4-4e65b79ce3a6" />
 
 Me falta los responses entrantes, y refinar un poco el message porque si debe ubicar keywords en los jsons.
+
+Al fin, terminando con la mitad de la coniguración, ya tenemos un log completo con request y response:
+
+<img width="2544" height="695" alt="image" src="https://github.com/user-attachments/assets/5cba7a76-ab64-45ac-955e-596c84e65819" />
+
+Para los responses si costó una buena chatgepeteada honestamente. Lo trataré de resumir así, para responses no puedes comunicar ContainerResponseFilter
+con WritterInterceptor, ni por MDS ni por el mismo pipeline de ContainerRequestContext. Puedes hacer un workaround usando vertex, que es motor
+reactivo de quarkus, MDC guarda por hilo, vertex por request, porque en el modelo reactivo los threads se rotan.
+
+````RequestInterceptorInit.java
+@Provider
+@Priority(Priorities.USER)
+public class RequestInterceptorInit implements ContainerRequestFilter{
+
+    private static final Logger log = Logger.getLogger(KibanaService.class);
+
+    @ConfigProperty(name = "app.name")
+    private String name;
+
+    @Override
+    public void filter(ContainerRequestContext requestContext) throws IOException {
+        // TODO Auto-generated method stub
+        requestContext.setProperty("microservice", this.name);
+        requestContext.setProperty("request-uri", requestContext.getUriInfo().getPath());
+        requestContext.setProperty("request-method", requestContext.getMethod());
+        requestContext.setProperty("transaction-id", requestContext.getHeaderString("transaction-id"));
+        requestContext.setProperty("response-code", "-");   
+    }
+}
+
+@Provider
+@Priority(Priorities.ENTITY_CODER)
+public class ResponseBodyIntereptor implements WriterInterceptor{
+
+    private static final Logger log = Logger.getLogger(ResponseBodyIntereptor.class);
+
+    @Override
+    public void aroundWriteTo(WriterInterceptorContext requestContext) throws IOException, WebApplicationException {
+        // TODO Auto-generated method stub
+        MediaType mt = requestContext.getMediaType();
+        io.vertx.core.Context vertxCtx =
+            io.vertx.core.Vertx.currentContext();
+
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        OutputStream original = requestContext.getOutputStream();
+
+        requestContext.setOutputStream(buffer);
+        requestContext.proceed();
+
+        byte[] body = buffer.toByteArray();
+        MDC.put("microservice", vertxCtx.getLocal("microservice"));
+        MDC.put("request-uri", vertxCtx.getLocal("request-uri"));
+        MDC.put("request-method", vertxCtx.getLocal("request-method"));
+        MDC.put("transaction-id", vertxCtx.getLocal("transaction-id"));
+        MDC.put("response-code", vertxCtx.getLocal("response-code"));
+        log.info("Response: ".concat(new String(body, StandardCharsets.UTF_8)));
+        MDC.clear();
+
+        original.write(body);
+    }
+    
+}
+````
+
+Y así, ya hemos terminado la mitad del interceptor, ahora solo falta configurar las solicitudes de quarkus client. Lo haré mañana.
