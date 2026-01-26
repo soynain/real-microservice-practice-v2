@@ -760,3 +760,119 @@ public class ResponseBodyIntereptor implements WriterInterceptor{
 ````
 
 Y así, ya hemos terminado la mitad del interceptor, ahora solo falta configurar las solicitudes de quarkus client. Lo haré mañana.
+
+**2.1.2.2. Configuración de los interceptors para E/S de requests del micro (los que el servicio ejecuta y recibe de otro servicio)**
+
+Ahora que por un par de chatgepetazos descubrimos el store de vertx, nos toca configurar lo poco restante que son los interceptors pero de
+el cliente QuarkusRestClientBuilder que instanciamos para conectar por ejemplo, microa a microb por url.
+
+Para esto ocupas solo dos clases: ClientRequestFilter && ClientResponseFilter
+
+Aquí dejo las implementaciones y las explico a continuación, con puntos MUY IMPORTANTES:
+
+````ResponseInterceptor.java
+@Provider
+@Priority(Priorities.USER)
+public class ResponseInterceptorExt implements ClientResponseFilter{
+
+    private static final Logger log = Logger.getLogger(ResponseInterceptorExt.class);
+
+    @Override
+    public void filter(ClientRequestContext requestContext, ClientResponseContext responseContext) throws IOException {
+        // TODO Auto-generated method stub
+         Context ctx = Vertx.currentContext();
+        MDC.put("microservice", requestContext.getProperty("microservice").toString());
+        MDC.put("request-uri", requestContext.getProperty("request-uri").toString());
+        MDC.put("request-method", requestContext.getProperty("request-method").toString());
+        MDC.put("response-code", String.valueOf(responseContext.getStatus()));
+       
+
+        MDC.put("transaction-id", ctx.getLocal("transaction-id"));
+
+        log.info("Response by client: ");
+    }
+    
+}
+````
+
+````RequestInterceptor.java
+@Provider
+@Priority(Priorities.USER)
+public class RequestInterceptorExtInit implements ClientRequestFilter{
+
+    private static final Logger log = Logger.getLogger(RequestInterceptorExtInit.class);
+
+    @ConfigProperty(name = "app.name")
+    private String name;
+
+    @Override
+    public void filter(ClientRequestContext requestContext) throws IOException {
+     
+        Context ctx = Vertx.currentContext();
+        requestContext.setProperty("microservice", this.name);
+        requestContext.setProperty("request-uri", requestContext.getUri().getPath());
+        requestContext.setProperty("request-method", requestContext.getMethod());
+        requestContext.setProperty("response-code", "-");
+        requestContext.setProperty("transaction-id",requestContext.getHeaderString("transaction-id"));
+
+        MDC.put("microservice", requestContext.getProperty("microservice").toString());
+        MDC.put("request-uri", requestContext.getProperty("request-uri").toString());
+        MDC.put("request-method", requestContext.getProperty("request-method").toString());
+        MDC.put("response-code", requestContext.getProperty("response-code").toString());
+        MDC.put("transaction-id", ctx.getLocal("transaction-id"));
+
+        log.info("Request by client: ");
+    }
+    
+}
+````
+
+Como pueden darse cuenta, aquí es más sencillo, no ocupas un ciclo de vida de más de dos clases, PERO
+algo muy importante. No importa si usas peticiones bloqueantes o reactivas, Quarkus funciona de tal manera
+que usa diferentes hilos aun asi para procesos distintos. El store de vertx sirve en toda clase de implementación, es
+como... un store de node js, pero más de bajo nivel en quarkus, y para otras tareas tambien.
+
+Cuando se diseñan microservicios, nuestra tarea es asegurar la trazabilida de los mismos, por medio de un transaction-id,
+nosotros lo propagamos desde la primera petición, ¿pero para los demás micros?
+
+En entornos productivos con spring boot, se hace otro jar externo, para dispersar ese header, y a la vez validar que headers accesan
+en nuestros microservicios, por lo genera usar el HttpHeaders para obtener esos headers sin problema y los puedes inyectar
+en cualquier clase o pojo. En quarkus es un poco distinto... los builders se crean durante el ciclo de vida de los beans, no puedes sobreescribirlos dinámicamente
+o asignarle por cada petición los headers, no podrias crear un método getHeaders() como se acostumbra en RestTemplate. Aquí también debes
+apoyarte del interceptor, en este caso del ContainerRequestFilter e implementar Vertx en el contexto local:
+
+````RequestInterceptorInit.java
+ @Override
+    public void filter(ContainerRequestContext requestContext) throws IOException {
+        // TODO Auto-generated method stub
+        requestContext.setProperty("microservice", this.name);
+        requestContext.setProperty("request-uri", requestContext.getUriInfo().getPath());
+        requestContext.setProperty("request-method", requestContext.getMethod());
+        requestContext.setProperty("transaction-id", requestContext.getHeaderString("transaction-id"));
+        requestContext.setProperty("response-code", "-");   
+
+        Context cx = Vertx.currentContext();
+
+        cx.putLocal("transaction-id", requestContext.getHeaderString("transaction-id"));
+        
+    }
+````
+
+
+Añade el putLocal para que en el hilo de la petición, se persista tu transaction-id o algún otro header que quieras inyectar.
+Procura que el diseño de tus apis no dependa de tantos headers más que en cuestión de ids para identificación de subflujos alternos (canales),
+todo centralo en base al request body en un json. Así en el request y response del cliente ya te reflejara tu uuid y podrás hacer consultas esenciales
+como estas, traceando en orden la ejecución de tus micros ^^
+
+<img width="2491" height="1403" alt="image" src="https://github.com/user-attachments/assets/9ad1beb4-0354-41d1-96a5-afb9c189c53b" />
+
+Como podrás notar en la captura, ya mapeamos nuestro transaction, con dos request y dos responses del servicio. Y correcto, si analizas la imagen,
+te daras cuenta que están en desorden, esto es por otra cuestión que entra más en concepto de un patrón manual y de estándar y simpleza. Previo a
+invocar un cliente, debes loguearlo en el método del cliente, es un estánda que debe seguirse, en el plugin podemos integrar un método
+para invocarlo siempre antes y después de invocar al cliente.
+
+Aquí fue por demostración, haremos esa modificación:
+
+<img width="666" height="202" alt="image" src="https://github.com/user-attachments/assets/1b60f275-ad46-4cbb-8298-38131a094730" />
+
+
