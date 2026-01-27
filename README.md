@@ -875,4 +875,203 @@ Aquí fue por demostración, haremos esa modificación:
 
 <img width="666" height="202" alt="image" src="https://github.com/user-attachments/assets/1b60f275-ad46-4cbb-8298-38131a094730" />
 
+Hay unos puntos importantes sobre los cuales perdí tiempo pero me permitió profundizar en el framework. Primero, el ciclo de vida de las clases:
 
+-ContainerRequestFilter
+-ReaderInterceptor
+-ContainerResponseFilter
+-WritterInterceptor
+
+Se ejecuta de manera descendente, así como los anoté, se ejecutan en hilos diferentes a los que se ejecutan en:
+-ClientRequestFilter
+-ClientResponseFilter
+
+¿Qué intenté hacer que hasta quise chatgepetar a lo bestia para no perder tiempo leyendo docu? hacer un log más ordenado, puesto que si los request y response
+del micro se detectaban, los client se ejecutaban mucho antes, y parecia que ls peticiones externas se ejecutaban antes que las propias. En resumidas, intenté
+hacer timestamps relativos pero no, no se puede modificar porque es parte de la implementación interna de estas clases, ni aunque inyectes contexto, nada.
+
+Entonces, recordando un poco experiencas pasadas previas me di cuenta que, no necesariamente requieres el ClientRequestFiler porque, 
+cuando microa llame a microb, este va a imprimir el request desde su containerrequest con el timestamp correcto, y para invocar
+el ClientResponseFilter, solo basta con imprimir el log en el cliente, y para que salga integro no requieres limpiar
+el MDC en los filters previos!!!.
+
+Otro punto importante!! desde el ContainerRequestFilter usa MDC para que los campos por default se establezcan en todas tus instancias de loggings
+por hilo y petición.
+
+Honestamente creo que hacer un interceptor si tiene su complejidad, aparte debes acomodarlo a todo tipo de responses, sean jsons o xmls.
+
+Para crear este efecto en donde el reader interceptor no te aparezca hasta lo último, tienes que ceartu propio interceptor.
+
+**2.1.2.2.1 Workaround para un log descente, concepto de los @InterceptorBidings en jakarta**
+
+Como comentaba, los logs pueden aparecer en desorden por lo mismo, solo desde el ReaderInterceptor puedes recupera el body del request,
+y desde el writter puedes recuperar solamente el body response, no puedes coordinarlos o usar @Priority para intentar que se ejecuten.
+
+Una manera de no complicarela vida es haciendo logs de request y response del cliente por el service, te puede ayudar, pero y si no?
+además en logs tradicionals se acostumbra que, el response y request externo se impriman para analizar el payload crudo de las
+peticiones externas.
+
+Con mucho sufrimiendo ya lo medio descubrí, puesto que al parecer en spring es más fácil y en quarkus un poco dificil.
+
+Prestemos atención:
+
+````Controller.java
+
+@Path("/")
+@ApplicationScoped
+@ControllerLog //con eso globalizas el primr request, ya no necesitas el ContainerControllerInterceptor
+public class KibanaController {
+    @Inject
+    private KibanaService kibanaService;
+
+    
+    @GET
+    public String sendToKibana() throws IOException{
+        kibanaService.initReq();
+        return "Ok";
+    }
+
+    @POST
+    @Path("/prueba")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @jakarta.ws.rs.Produces(MediaType.APPLICATION_JSON)
+    public ExampleResponse prueba2(PostExampleRequest req){
+        return new ExampleResponse();
+    }
+}
+````
+
+¿Qué es @ControllerLog? una anotación personalizada, creada por nosotros ^^, tópicos más a fondo de java.. por dios.
+
+````ControllerLog.java
+package org.acme.interceptors.loggers.internal;
+
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+
+import jakarta.interceptor.InterceptorBinding;
+
+@InterceptorBinding
+@Target({ElementType.METHOD,ElementType.TYPE})
+@Retention(RetentionPolicy.RUNTIME)
+public @interface ControllerLog {}
+````
+
+¿Para qué te sirve? para esto:
+
+```` ControllerInterceptor.java
+@Interceptor
+@ControllerLog
+@Priority(Interceptor.Priority.APPLICATION)
+public class ControllerInterceptor {
+    private final Logger log = Logger.getLogger(getClass());
+
+    @Inject
+    private ObjectMapper mapper;
+
+    @AroundInvoke //metodo invocado por cada invocacion de tus clases resources (controllers)
+    public Object logBody(InvocationContext ctx) throws Exception {
+        if (ctx.getParameters() != null && ctx.getParameters().length > 0) {
+            for (Object param : ctx.getParameters()) {
+                if (param != null && param.getClass().getName().endsWith("Request")) {
+                    log.info("Request: " + mapper.writeValueAsString(param)); //escenarios post
+                }
+            }
+        } else {
+            log.info("Request: "); //escenarios get
+        }
+
+        return ctx.proceed();
+    }
+}
+````
+
+Un interceptor a nivel método, con esto ya no tienes que imprimir tus logs desde el container o el reader interceptor, en ambos
+aun seguirás seteando las propiedades escenciales de Kibana pero aquí ya tendrás el pojoserializado en tiempo real,
+y el log del ClientRequestInterceptor no opacará al Request padre. ¿Muy trillado no? a mi también me dio flojera.
+
+Y al usar @ControllerLog, todos tus requst pasarán por esa anotación, se llaman CDI interceptors, es algo de quarkus.
+
+Y para imprimir las peticiones entrantes y salientes de tu micro... también con interceptors:
+
+````ExternalClientLog.java
+@InterceptorBinding
+@Target({ElementType.METHOD,ElementType.TYPE})
+@Retention(RetentionPolicy.RUNTIME)
+public @interface ExternalClientLog {}
+````
+
+Y lo mismo, un Interceptor implementado:
+
+````ExternalControllerInterceptor.java
+@Interceptor
+@ExternalClientLog
+@Priority(Interceptor.Priority.APPLICATION)
+public class ExternalControllerInterceptor {
+    private final Logger log = Logger.getLogger(getClass());
+
+    @Inject
+    private ObjectMapper mapper;
+
+    @AroundInvoke //metodo invocado por cada invocacion de tus clases resources (controllers)
+    public Object logBody(InvocationContext ctx) throws Exception {
+        Object[] params = ctx.getParameters();
+        Context vrtx = Vertx.currentContext();
+        if (params != null && params.length > 0) {
+      //      System.out.print( params[0]+" dddfddfdfddff");
+            vrtx.putLocal("init-req-client", params[0].toString());
+        }else{
+            vrtx.putLocal("init-req-client", "-");
+        }
+
+
+        return ctx.proceed();
+    }
+}
+````
+Que implementaras en tu capa service (SEGUIR MUY BUENAS PRÁCTICAS DE PROGRAMACIÓN O SEGUIR UNA CONVENCIÓN DE VARIABLES PORQUE
+INTERCEPTA TODO)
+
+````KibanaService.java
+@ApplicationScoped
+@ExternalClientLog
+public class KibanaService {
+    private static final Logger log = Logger.getLogger(KibanaService.class);
+    
+    private ExInterface client;
+
+    @PostConstruct
+    public void init(){
+        client = QuarkusRestClientBuilder.newBuilder()
+            .baseUri(URI.create("https://jsonplaceholder.typicode.com/posts"))
+            .build(ExInterface.class);
+    }
+
+    public void initReq(){
+        try {
+            System.out.println("wujuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu");
+        //  log.info("Request ex "+new ExtCallLogger().toString());
+            ExampleResponse b=client.getP();
+
+        } catch (Exception e) {
+            System.out.println("DASDDDDDDDDDDDDDDDDDADASDASD ");
+        }
+      //  log.info("Response from client: "+b);
+       
+    }
+}
+````
+
+
+Y así no importa que imprimas dentro del método, YA TENDRÁS UN LOG ORDENADO.
+
+<img width="2559" height="1439" alt="image" src="https://github.com/user-attachments/assets/f547dc7a-5228-41e3-8605-bec9cef737df" />
+
+
+Está perro hacer un interceptor, y puedes ir refinando entre más pruebas hagas, yo de estimación para probarlo bien daria 2 semanas o el mes. Ahora el desafio final es, 
+adaptarlo a un micro real, hacerlo externo, en el jar yo hice unos controladorespero asi no va. Hay que implementar un Factory que nos permita aceder a un log singleton
+y a los @ExternalClientLog y @ControllerLog, según sé es con META-INF. Y se que algo como *Nexus Repository* te facilita eso pero es práctica, no me están pagando jajaja.
+
+**2.2 Integración del wrapper e interceptor como jar externo a dos microservicios.**
