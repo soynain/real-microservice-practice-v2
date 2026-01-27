@@ -1081,3 +1081,148 @@ gestionar tus librerias, y creo también puedes bloquear que dependencias bloque
 no usen otros. Pero, solo para esta práctica, usaremos jar embebidos jejejeje.
 
 También fue un tema entender como se conecta los jars, puesto te sobreescriben el properties.
+
+Tenía rato qu algo no me daba dolor mental, hasta las 3:15 am me salió ste tema. No estoy seguro 
+pero me tomó 2 días y medio/3 días. Quiero antes mostrar el resultado final de esta implementación:
+
+<img width="2473" height="1439" alt="image" src="https://github.com/user-attachments/assets/69f329c1-1500-4374-a0aa-954a0ca49771" />
+
+<img width="2533" height="1439" alt="image" src="https://github.com/user-attachments/assets/6905fde6-deea-4c4e-8c1a-3c047958b918" />
+
+Un log ordenado, involucrando dos microservicios con timestamps de invocación ordenados. Y siendo explicitos, que dolor de guevos eh... pero se pudo.
+
+Temas a tomar en cuenta: 
+
+````pom.xml
+<plugin>
+    <groupId>io.smallrye</groupId>
+    <artifactId>jandex-maven-plugin</artifactId>
+    <version>3.5.3</version>
+    <executions>
+        <execution>
+            <id>make-index</id>
+            <goals>
+                <goal>jandex</goal>
+            </goals>
+        </execution>
+    </executions>
+</plugin>
+````
+
+Anexar jandex para que el jar padre absorva las clases de tu jar hijo!! sobre todas tus librerias (en spring boot no se debe hacer).
+
+En resources un folder META-INF con un archivo microprofile properties para que tu jar hijo no sobreescriba al padre
+
+<img width="1726" height="502" alt="image" src="https://github.com/user-attachments/assets/2225662f-3709-422d-bfa4-988fa71fdbb0" />
+
+En tu ClientRequstFilter, añade un método para pre inyectar los headers que estaras esparciendo en todo tu universo de micros (CONSIDERAR OTRA LIBRERIA PARA FILTRARLOS
+CON UN ENUM Y CREAR UN MÉTODO PARA POPULAR LOS HEADERS DEL REST CLIENT)
+
+````E.java
+ @Override
+    public void filter(ClientRequestContext requestContext) throws IOException {     
+        Context ctx = Vertx.currentContext();
+        requestContext.setProperty("microservice", this.name);
+        requestContext.setProperty("request-uri", requestContext.getUri().getPath());
+        requestContext.setProperty("request-method", requestContext.getMethod().toString());
+        requestContext.setProperty("response-code", "-");
+        requestContext.setProperty("transaction-id",requestContext.getHeaderString("transaction-id"));
+
+        requestContext.getHeaders().add("transaction-id", ctx.getLocal("transaction-id"));
+    }
+````
+Y por último, anexarlos en el pom padre:
+
+````pom.xml
+<dependency>
+      <groupId>org.acme.micros.moi</groupId>
+      <artifactId>commons-logging-lib</artifactId>
+      <version>1.0.15-SNAPSHOT</version>
+      <scope>system</scope>
+      <systemPath>${project.basedir}/libs/commons-logging-lib-1.0.15-SNAPSHOT.jar</systemPath>
+  </dependency>
+````
+
+
+Consideraciones importantes: 
+
+**- No usar writterInterceptor:**: Se que hablamos de esa clase anteriormente pero al adaptar
+el jar al pom padre, daba conflictos al querer mandar una petición de microa a microb, porque al extraer
+el output stream, se corrompe la serialización del objeto (NO RECOMENDADO).
+
+Mejor, desde el ContainerResponseFilter obten tu pojo y transformalo a JSON
+
+````pojo.java
+final class ResponseInterceptor implements ContainerResponseFilter{
+
+    @ConfigProperty(name = "app.name")
+    private String name;
+
+    private static final Logger log = Logger.getLogger(ResponseInterceptor.class);
+
+    @Inject
+    ObjectMapper objectMapper;
+
+    @Override
+    public void filter(ContainerRequestContext requestContext, ContainerResponseContext responseContext)
+            throws IOException {
+
+        io.vertx.core.Context vertxCtx = io.vertx.core.Vertx.currentContext();
+                
+        if (vertxCtx != null) {
+            vertxCtx.putLocal("microservice", this.name);
+            vertxCtx.putLocal("request-uri", requestContext.getUriInfo().getPath());
+            vertxCtx.putLocal("request-method", requestContext.getMethod());
+            vertxCtx.putLocal("transaction-id", requestContext.getHeaderString("transaction-id"));
+            vertxCtx.putLocal("response-code-end", String.valueOf(responseContext.getStatusInfo().getStatusCode()));
+            MDC.put("microservice", vertxCtx.getLocal("microservice"));
+            MDC.put("request-uri", vertxCtx.getLocal("request-uri"));
+            MDC.put("request-method", vertxCtx.getLocal("request-method"));
+            MDC.put("transaction-id", vertxCtx.getLocal("transaction-id"));
+            MDC.put("response-code", vertxCtx.getLocal("response-code-end"));
+
+            log.info("Response: " + objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(responseContext.getEntity()).toString());
+        }
+
+        
+    
+    }
+    
+}
+````
+Para peticiones de restclient, manten la misma implementación de extraer el body con un @interceptor, guardalo en un vertx
+e imprimelo hasta el ClientResponseFilter
+
+````client.java
+@Override
+    public void filter(ClientRequestContext requestContext, ClientResponseContext responseContext) throws IOException {
+        // TODO Auto-generated method stub
+        Context ctx = Vertx.currentContext();
+        MDC.put("microservice", requestContext.getProperty("microservice").toString());
+        MDC.put("request-uri", requestContext.getProperty("request-uri").toString());
+        MDC.put("request-method", requestContext.getProperty("request-method").toString());
+        MDC.put("response-code", String.valueOf(responseContext.getStatusInfo().getStatusCode()));
+        MDC.put("transaction-id", ctx.getLocal("transaction-id"));
+
+        // --- RESPONSE BODY (bufferizado) ---
+        InputStream is = responseContext.getEntityStream();
+        String body ="";
+
+        if (is != null) {
+            byte[] bytes = is.readAllBytes();
+            responseContext.setEntityStream(new ByteArrayInputStream(bytes));
+            body = new String(bytes, StandardCharsets.UTF_8);
+            
+            log.info("Response from client: "+body+" for Request: "+ctx.getLocal("init-req-client"));
+            body = null;
+        }else{
+            log.info("Response from client: -"+" for Request: "+ctx.getLocal("init-req-client"));
+        }
+        
+    }
+````
+
+
+Y listo, tu interceptor básico para microservicios.
+
+**3.0 Configuración básica Jenkins y configuración de stags**
