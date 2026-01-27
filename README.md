@@ -1075,3 +1075,9 @@ adaptarlo a un micro real, hacerlo externo, en el jar yo hice unos controladores
 y a los @ExternalClientLog y @ControllerLog, según sé es con META-INF. Y se que algo como *Nexus Repository* te facilita eso pero es práctica, no me están pagando jajaja.
 
 **2.2 Integración del wrapper e interceptor como jar externo a dos microservicios.**
+
+Aquí hay varias vertientes, y en todo proyecto dependerá el tamaño del ecosistema. Puedes usar nexus privado para
+gestionar tus librerias, y creo también puedes bloquear que dependencias bloquear en tu pom para que los devs
+no usen otros. Pero, solo para esta práctica, usaremos jar embebidos jejejeje.
+
+También fue un tema entender como se conecta los jars, puesto te sobreescriben el properties.
