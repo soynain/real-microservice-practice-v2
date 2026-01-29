@@ -1226,3 +1226,12 @@ e imprimelo hasta el ClientResponseFilter
 Y listo, tu interceptor básico para microservicios.
 
 **3.0 Configuración básica Jenkins y configuración de stags**
+
+Por temas de prácticidad con la práctica y porque requiero ir estudiando otras cosas importante, lo dejaremos por aquí. No voy a armar el pipeline
+y es que aparte también existe github actions que tiene integraciones más directas en ese aspecto.
+
+Pero, dejaré aquí un diagrama conceptual de cómo sería una arquitectura con CI/CD más AWS.
+
+<img width="987" height="799" alt="diagrama deploys drawio" src="https://github.com/user-attachments/assets/81bd63ed-444e-4b54-9ee7-d3eb9f420e6e" />
+
+Con esta implementación y que te bases en prácticas anteriores, ya dominarás una infraestructura de microservicios.
